@@ -1,0 +1,483 @@
+---
+title: "Proteomic Analysis"
+subtitle: "Collaboration with the Bio-Chemistry group"
+author: 
+  - name: Ager Uribezubia Azpitarte
+    affiliations:
+      - name: Institut de Recerca de Sant Pau - UGMC
+  - name: Pol Ezquerra Condeminas
+    affiliations:
+      - name: Institut de Recerca de Sant Pau - UGMC
+date: "January 10, 2025"
+format: 
+  html:
+    code-fold: true
+---
+
+## Organize the data
+
+```{r, message=F, include=FALSE}
+# Install Required Packages
+if (!require("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+if (!require("dplyr", quietly = TRUE)) {
+  install.packages("dplyr")
+}
+
+if (!require("pheatmap", quietly = TRUE)) {
+  BiocManager::install("pheatmap")
+}
+
+if (!require("ggplot2", quietly = TRUE)) {
+  install.packages("ggplot2")
+}
+
+if (!require("reshape2", quietly = TRUE)) {
+  install.packages("reshape2")
+}
+
+if (!require("tidyr", quietly = TRUE)) {
+  BiocManager::install("tidyr")
+}
+
+if (!require("patchwork", quietly = TRUE)) {
+  install.packages("patchwork")
+}
+
+if (!require("ggrepel", quietly = TRUE)) {
+  install.packages("ggrepel")
+}
+
+if (!require("tibble", quietly = TRUE)) {
+  install.packages("tibble")
+}
+
+if (!require("here", quietly = TRUE)) {
+  install.packages("here")
+}
+
+if (!requireNamespace("limma", quietly = TRUE)) BiocManager::install("limma")
+```
+
+
+```{r}
+# Load required packages
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+library(ggplot2)
+library(reshape2)
+library(patchwork)
+library(ggrepel)
+library(limma)
+library(tibble)
+library(here)
+
+
+```
+
+
+```{r}
+# Set working directory to the own folder of the file
+setwd(here())
+
+# Define Root file to Bioinf02
+base_path <- file.path(Sys.getenv("HOME"), "bioinf02")
+file_path1 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/2025PROT002-70.xlsx")
+# Read file1
+pr_ALL <- readxl::read_xlsx(file_path1)
+
+# Filter the columns of interest
+expr_ALL <- pr_ALL[,!is.na(as.matrix(pr_ALL)[1,])]
+
+# Set column and row names
+colnames(expr_ALL) <- expr_ALL[1,]
+
+# Remove first row from datasets
+expr_ALL <- expr_ALL[2:nrow(expr_ALL),]
+
+# Convert expr matrix in numeric
+expr_ALL <- sapply(expr_ALL, as.numeric)
+row.names(expr_ALL) <- pr_ALL$`Protein IDs`[!is.na(pr_ALL$`Protein IDs`)]
+
+# Create the meta-data matrix for proteins
+meta_pr <- pr_ALL[2:nrow(expr_ALL),is.na(as.matrix(pr_ALL)[1,])]
+
+# Create the meta-data matrix for patients
+file_path2 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/Secretoma Ob per Lipid Proteo i AC16.xlsx")
+meta_pat <- readxl::read_xlsx(file_path2)
+
+# Correct colnames
+colnames(meta_pat)[1] <- "id"
+
+# Read the Raw protein table
+file_path3 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/proteinGroups.txt")
+raw_pr <- read.table(file_path3, sep = "\t", header = TRUE)
+
+
+# Remove NA rows and Add grouping variable
+meta_pat <- meta_pat %>% 
+  dplyr::filter(!is.na(id)) %>%
+  dplyr::mutate(group = as.factor(toupper(substr(id, 1,2))),
+                Sexo = as.factor(Sexo),
+                Otros = as.factor(ifelse(is.na(Otros), "No", Otros)),
+                # Correct the meta_pat ID to make the same as expr_ALL
+                id = as.factor(paste0(group, tidyr::extract_numeric(id))),
+                )
+
+summary(meta_pat)
+```
+
+```{r}
+meta_pat$IMC[meta_pat$id == "NW3"] <- 21.6
+
+summary(meta_pat)
+```
+
+
+```{r}
+meta_pat %>% 
+  group_by(group) %>% 
+  select(-Num) %>%
+  summarise(across(where(is.numeric),
+                   list(mean = mean, sd = sd, min = min, max = max),
+                   .names = "{.col}_{.fn}"))
+
+```
+
+
+## Data exploration
+
+### Heat Map
+
+```{r}
+pheatmap(expr_ALL,
+         color = colorRampPalette(c( "blue", "yellow"))(100),
+         cluster_rows = TRUE, cluster_cols = TRUE,
+         show_rownames = FALSE, show_colnames = TRUE,
+         main = "Expression heatmap")
+```
+
+
+### Protein values per patient
+
+```{r}
+# Add probe IDs as a column
+exprs_ALL_df <- data.frame(Protein = rownames(expr_ALL), expr_ALL)
+
+# Melt the data frame into long format
+expr_long <- reshape2::melt(exprs_ALL_df, id.vars = "Protein", variable.name = "patient", value.name = "Expression") 
+
+# Add group variable
+expr_long <- expr_long %>%
+  dplyr::mutate(group = as.factor(substr(patient, 1,2)))
+
+
+# Density plot
+a <- ggplot(expr_long, aes(x = Expression, color = patient)) +
+  geom_density() +
+  theme_bw() +
+  ggtitle("Expression density distributions per patient")
+
+b <- ggplot(expr_long, aes(x = Expression, fill = 1)) +
+  geom_density(alpha = 0.5) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggtitle("General expression density distributions")
+
+# Density plot
+c <- ggplot(expr_long, aes(x = Expression, color = group, fill = group)) +
+  geom_density(alpha = 0.1) +
+  theme_bw() +
+  ggtitle("Expression density distributions per group")
+
+# Density plot
+d <- ggplot(expr_long, aes(x = Expression, color = group, fill = group)) +
+  geom_boxplot(alpha = 0.1) +
+  theme_bw() +
+  ggtitle("Expression distributions' boxplots per group")
+
+
+final_plot <- (a|b) / (c|d)
+
+
+ggsave(
+  filename = "results/expression_density_combined.png",
+  plot = final_plot,
+  width = 12,     # adjust as needed
+  height = 10,    # adjust as needed
+  dpi = 300
+)
+```
+
+![](expression_density_combined.png)
+### Mean vs SD per Protein
+
+```{r}
+# Compute mean and SD across patients for each protein
+protein_stats <- exprs_ALL_df %>%
+  tidyr::pivot_longer(-Protein, names_to = "patient", values_to = "Expression") %>%
+  dplyr::group_by(Protein) %>%
+  dplyr::summarise(
+    mean_expr = mean(Expression, na.rm = TRUE),
+    sd_expr   = sd(Expression, na.rm = TRUE)
+  )
+# Density plot of mean expression values
+a <- ggplot(protein_stats, aes(x = mean_expr)) +
+  geom_density(fill = "steelblue", alpha = 0.4) +
+  theme_bw() +
+  ggtitle("Density of Mean Expression Per Protein") +
+  xlab("Mean Expression")
+
+# Scatter plot: SD vs mean per protein
+b <- ggplot(protein_stats, aes(x = mean_expr, y = sd_expr)) +
+  geom_point(alpha = 0.6) +
+  theme_bw() +
+  ggtitle("SD vs Mean Expression per Protein") +
+  xlab("Mean Expression") +
+  ylab("Standard Deviation")
+
+a | b
+```
+
+## Principal Component Analysis
+
+Check if there is any principal component that shows a difference between any of the covariables.
+```{r}
+# Ensure metadata is ordered to match expression matrix
+meta_pat <- meta_pat[match(colnames(expr_ALL), meta_pat$id), ]
+
+# Transpose so samples are rows for PCA
+pca_res <- prcomp(t(expr_ALL), scale. = TRUE)
+
+# build PCA dataframe
+pca_df <- data.frame(
+  PC1 = pca_res$x[, 1],
+  PC2 = pca_res$x[, 2],
+  PC3 = pca_res$x[, 3],
+  PC4 = pca_res$x[, 4],
+  id = meta_pat$id,
+  group = meta_pat$group,
+  Sexo = meta_pat$Sexo,
+  Otros = meta_pat$Otros,
+  Edad = meta_pat$Edad
+)
+
+# Create PC pairs
+pc_pairs <- list(
+  c("PC1","PC2"),
+  c("PC1","PC3"),
+  c("PC1","PC4"),
+  c("PC2","PC3"),
+  c("PC2","PC4"),
+  c("PC3","PC4")
+)
+
+# Meta variables 
+
+color_vars <- c("Sexo", "Otros", "Edad", "group")
+
+
+# Function to create pca_plot
+make_pca_plot <- function(df, pcs, color_var) {
+  ggplot(df, aes_string(x = pcs[1], y = pcs[2], color = color_var)) +
+    geom_point(size = 3) +
+    geom_text_repel(aes(label = id), size = 3) +
+    theme_bw() +
+    ggtitle(paste0(pcs[1], " vs ", pcs[2], " colored by ", color_var)) +
+    xlab(paste0(pcs[1], " (", round(summary(pca_res)$importance[2, as.numeric(substr(pcs[1],3,3))] * 100, 1), "%)")) +
+    ylab(paste0(pcs[2], " (", round(summary(pca_res)$importance[2, as.numeric(substr(pcs[2],3,3))] * 100, 1), "%)"))
+}
+
+# Generate plot list
+plots <- list()
+
+# Create each pca plot
+for (pc in pc_pairs) {
+  for (colvar in color_vars) {
+    p <- make_pca_plot(pca_df, pc, colvar)
+    plots <- append(plots, list(p))
+  }
+}
+
+# Combinar todos los gráficos en una cuadrícula
+final_plot <- wrap_plots(plots, ncol = 2)
+
+# Save PCA plots
+ggsave("results/PCA_all_combinations.png",
+       final_plot,
+       width = 16, height = 40, dpi = 300)
+
+```
+
+![](PCA_all_combinations.png)
+
+# Data models
+
+## Individual protein levels
+
+### BMI level model
+
+Protein expression level copmparisson related to BMI corrected by Age and Sex
+
+```{r}
+# reorder metadata to match expr_ALL columns
+meta_pat <- meta_pat[match(colnames(expr_ALL), meta_pat$id), ]
+
+# basic check
+stopifnot(all(colnames(expr_ALL) == meta_pat$id))
+
+# Optionally center continuous covariates (helps interpret intercepts)
+meta_pat$IMC_c  <- scale(meta_pat$IMC, center = TRUE, scale = FALSE)[,1]
+meta_pat$Edad_c <- scale(meta_pat$Edad, center = TRUE, scale = FALSE)[,1]
+
+### Build design matrix
+# Model: Expression ~ IMC + Edad + Sexo
+# (Intercept corresponds to reference level of Sexo)
+design_bmi <- model.matrix(~ IMC_c + Edad_c + Sexo, data = meta_pat)
+colnames(design_bmi)
+# Check design
+print(head(design_bmi))
+
+### Fit limma
+# expr_ALL must be numeric matrix
+expr_mat <- as.matrix(expr_ALL)
+
+fit_bmi <- lmFit(expr_mat, design_bmi)
+# Use empirical Bayes with robust options and trend if needed
+fit_bmi <- eBayes(fit_bmi, trend = TRUE, robust = TRUE)
+
+### Extract results for BMI (IMC_c)
+# Determine the exact coefficient name for IMC_c in design
+coef_name <- "IMC_c"
+if(!coef_name %in% colnames(design_bmi)) stop("Coefficient name for BMI not found in design.")
+
+res_bmi <- topTable(fit_bmi, coef = coef_name, number = Inf, sort.by = "P")
+# res contains logFC (effect per unit of IMC_c), AveExpr, t, P.Value, adj.P.Val, B
+head(res_bmi)
+
+### 5. Add protein names column (rownames are proteins)
+res_bmi <- res_bmi %>% 
+  tibble::rownames_to_column(var = "Protein") %>%
+  as.data.frame()
+
+### 6. Volcano plot (ggplot2) - custom
+# choose thresholds (you can change)
+logFC_thr <- 0.2        # example: proteins with abs(logFC) > 0.2 considered biologically relevant (adjust as you wish)
+padj_thr  <- 0.05
+
+res_bmi$significant <- with(res_bmi, (adj.P.Val < padj_thr) & (abs(logFC) > logFC_thr))
+
+volc_df_bmi <- res_bmi %>%
+  mutate(minusLog10P = -log10(P.Value + 1e-300))  # avoid -Inf
+
+p_volcano_bmi <- ggplot(volc_df_bmi, aes(x = logFC, y = minusLog10P)) +
+  geom_point(aes(color = significant), alpha = 0.7) +
+  scale_color_manual(values = c("grey50", "red")) +
+  geom_vline(xintercept = c(-logFC_thr, logFC_thr), linetype = "dashed") +
+  geom_hline(yintercept = -log10(padj_thr), linetype = "dashed") +
+  theme_bw() +
+  xlab("log2 fold change (per 1 BMI unit)") +
+  ylab("-log10(p-value)") +
+  ggtitle("Volcano plot: association of protein expression with BMI (IMC)") +
+  theme(legend.position = "none")
+
+# label top hits (by smallest adj.P.Val or largest effect)
+top_to_label_bmi <- volc_df_bmi %>% arrange(adj.P.Val) %>% head(10)
+p_volcano_bmi <- p_volcano_bmi +
+  geom_text_repel(data = top_to_label_bmi,
+                  aes(label = Protein),
+                  size = 3,
+                  max.overlaps = 20)
+
+# Show plot (optional)
+print(p_volcano_bmi)
+
+# Save to file (PNG)
+ggsave("results/volcano_IMC_limma.png", p_volcano_bmi, width = 8, height = 6, dpi = 300)
+```
+
+### Group comparisson
+
+```{r}
+# Design matrix for group comparison (with Age + Sex covariates)
+design_group <- model.matrix(~ group + Edad_c + Sexo, data = meta_pat)
+fit_group <- lmFit(expr_mat, design_group)
+fit_group <- eBayes(fit_group, trend = TRUE, robust = TRUE)
+
+# Define contrasts for all pairwise comparisons
+contr.matrix <- makeContrasts(
+  OB_vs_NW = groupOB,
+  OW_vs_NW = groupOW,
+  OB_vs_OW = groupOB - groupOW,
+  levels = design_group
+)
+
+# Fit model
+fit2 <- contrasts.fit(fit_group, contr.matrix)
+fit2 <- eBayes(fit2, trend = TRUE, robust = TRUE)
+
+# --- 5. Function to make volcano plots for a given contrast
+make_volcano <- function(fit2, contrast_name, logFC_thr = 0.2, padj_thr = 0.05, top_n = 10) {
+  res <- topTable(fit2, coef = contrast_name, number = Inf, sort.by = "P") %>%
+    rownames_to_column("Protein") %>%
+    as.data.frame()
+  
+  res$significant <- with(res, (adj.P.Val < padj_thr) & (abs(logFC) > logFC_thr))
+  res$minusLog10P <- -log10(res$P.Value + 1e-300)
+  
+  # Volcano plot
+  p <- ggplot(res, aes(x = logFC, y = minusLog10P)) +
+    geom_point(aes(color = significant), alpha = 0.7) +
+    scale_color_manual(values = c("grey50", "red")) +
+    geom_vline(xintercept = c(-logFC_thr, logFC_thr), linetype = "dashed") +
+    geom_hline(yintercept = -log10(padj_thr), linetype = "dashed") +
+    theme_bw() +
+    xlab("log2 fold change") +
+    ylab("-log10(p-value)") +
+    ggtitle(paste0("Volcano: ", contrast_name)) +
+    theme(legend.position = "none")
+  
+  # Label top proteins
+  top_to_label <- res %>% arrange(adj.P.Val) %>% head(top_n)
+  p <- p + geom_text_repel(data = top_to_label,
+                           aes(label = Protein),
+                           size = 3,
+                           max.overlaps = 20)
+  return(p)
+}
+
+# --- 6. Make volcano plots for each contrast
+p_OB_vs_NW <- make_volcano(fit2, "OB_vs_NW")
+p_OW_vs_NW <- make_volcano(fit2, "OW_vs_NW")
+p_OB_vs_OW <- make_volcano(fit2, "OB_vs_OW")
+
+# --- 7. Optionally save plots
+ggsave("results/volcano_OB_vs_NW.png", p_OB_vs_NW, width = 8, height = 6, dpi = 300)
+ggsave("results/volcano_OW_vs_NW.png", p_OW_vs_NW, width = 8, height = 6, dpi = 300)
+ggsave("results/volcano_OB_vs_OW.png", p_OB_vs_OW, width = 8, height = 6, dpi = 300)
+
+
+```
+
+```{r}
+# Save the results in a res_list
+res_list <- list(
+  OB_vs_NW = topTable(fit2, coef = "OB_vs_NW", number = Inf, sort.by = "P") %>%
+  rownames_to_column("Protein") %>%
+  as.data.frame(),
+  OW_vs_NW = topTable(fit2, coef = "OW_vs_NW", number = Inf, sort.by = "P") %>%
+  rownames_to_column("Protein") %>%
+  as.data.frame(),
+  OB_vs_OW = topTable(fit2, coef = "OB_vs_OW", number = Inf, sort.by = "P") %>%
+  rownames_to_column("Protein") %>%
+  as.data.frame()
+)
+
+kableExtra::kable(res_list$OB_vs_NW %>% dplyr::filter(P.Value < 0.01))
+kableExtra::kable(res_list$OW_vs_NW %>% dplyr::filter(P.Value < 0.01))
+kableExtra::kable(res_list$OB_vs_OW %>% dplyr::filter(P.Value < 0.01))
+```
+
