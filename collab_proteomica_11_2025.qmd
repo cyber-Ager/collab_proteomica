@@ -83,9 +83,22 @@ library(here)
 # Set working directory to the own folder of the file
 setwd(here())
 
-# Define Root file to Bioinf02
-base_path <- file.path(Sys.getenv("HOME"), "bioinf02")
-file_path1 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/2025PROT002-70.xlsx")
+# Define Root file to Bioinf02 or local path
+local_path  <- "/home/ir_user/PhD/Obese_proteomica/" # Set your local path (if wanted)
+remote_base <- file.path(Sys.getenv("HOME"), "bioinf02")
+remote_rel  <- "ager/collab/bioquimica/bmi_proteomics/inputs/2025PROT002-70.xlsx"
+
+# Detect environment
+if (dir.exists(local_path)) {
+    message("Working in LOCAL environment.")
+    file_path1 <- file.path(local_path, "2025PROT002-70.xlsx")  
+} else {
+    message("Working in REMOTE environment.")
+    file_path1 <- file.path(remote_base, remote_rel)
+}
+
+cat("Using file:\n", file_path1, "\n")
+
 # Read file1
 pr_ALL <- readxl::read_xlsx(file_path1)
 
@@ -105,15 +118,29 @@ row.names(expr_ALL) <- pr_ALL$`Protein IDs`[!is.na(pr_ALL$`Protein IDs`)]
 # Create the meta-data matrix for proteins
 meta_pr <- pr_ALL[2:nrow(expr_ALL),is.na(as.matrix(pr_ALL)[1,])]
 
-# Create the meta-data matrix for patients
-file_path2 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/Secretoma Ob per Lipid Proteo i AC16.xlsx")
+# Create the meta-data matrix for patients (Same as file_path1)
+if (dir.exists(local_path)) {
+    message("Working in LOCAL environment.")
+    file_path2 <- file.path(local_path, "Secretoma Ob per Lipid Proteo i AC16.xlsx")  
+} else {
+    message("Working in REMOTE environment.")
+    file_path2 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/Secretoma Ob per Lipid Proteo i AC16.xlsx")
+}
+
 meta_pat <- readxl::read_xlsx(file_path2)
 
 # Correct colnames
 colnames(meta_pat)[1] <- "id"
 
 # Read the Raw protein table
-file_path3 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/proteinGroups.txt")
+if (dir.exists(local_path)) {
+    message("Working in LOCAL environment.")
+    file_path3 <- file.path(local_path, "proteinGroups.txt")  
+} else {
+    message("Working in REMOTE environment.")
+    file_path3 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/proteinGroups.txt")
+}
+
 raw_pr <- read.table(file_path3, sep = "\t", header = TRUE)
 
 
@@ -149,17 +176,73 @@ meta_pat %>%
 
 
 ## Data exploration
+### Statistical comparison between groups: 
+
+```{r}
+chi_square_group <- function(var) {
+  
+  tab <- table(meta_pat$group, meta_pat[[var]])
+  expected <- chisq.test(tab)$expected
+  
+  # If some expected < 5 → Fisher
+  if (any(expected < 5)) {
+    test <- fisher.test(tab)
+    method <- "Fisher Exact test"
+  } else {
+    test <- chisq.test(tab)
+    method <- "Chi-square test"
+  }
+  
+  list(
+    variable = var,
+    method = method,
+    table = tab,
+    p_value = test$p.value
+  )
+}
+
+res_sexo  <- chi_square_group("Sexo")
+res_otros <- chi_square_group("Otros")
+
+res_sexo
+res_otros
+```
+The distribution of DM across groups is highly unbalanced (Fisher’s exact test p = 5.7×10⁻⁴), indicating a strong and statistically significant association between having diabetes and overweight.
 
 ### Heat Map
 
 ```{r}
+# Add groups to see if cluster together
+annotation_col <- data.frame(Group = factor(meta_pat$group))
+rownames(annotation_col) <- colnames(expr_ALL)
+
 pheatmap(expr_ALL,
-         color = colorRampPalette(c( "blue", "yellow"))(100),
-         cluster_rows = TRUE, cluster_cols = TRUE,
-         show_rownames = FALSE, show_colnames = TRUE,
+         color = colorRampPalette(c("blue", "yellow"))(100),
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         show_rownames = FALSE,
+         annotation_col = annotation_col,
          main = "Expression heatmap")
 ```
+### Heat Map (100 variable proteins): 
 
+```{r}
+
+# Compute variance for each protein
+gene_var <- apply(expr_ALL, 1, var)
+
+# Select top 100 most variable proteins
+top100_genes <- names(sort(gene_var, decreasing = TRUE))[1:100]
+expr_top100 <- expr_ALL[top100_genes, ]
+
+pheatmap(expr_top100,
+         color = colorRampPalette(c("blue", "yellow"))(100),
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         show_rownames = FALSE,
+         annotation_col = annotation_col,
+         main = "Expression heatmap (Top 100 most variable proteins)")
+```
 
 ### Protein values per patient
 
@@ -313,6 +396,62 @@ ggsave("results/PCA_all_combinations.png",
 ```
 
 ![](PCA_all_combinations.png)
+Use other PCA option to see ellipses from the different groups: 
+
+```{r}
+# Add groups to see if cluster together
+library(factoextra)
+library(ggpubr)
+library(ggplot2)
+
+# PCA with factoextra
+res.pca <- prcomp(t(expr_ALL), scale.=TRUE, center=TRUE)
+
+# Variables wanted to plot: 
+vars <- c("group", "Sexo", "Otros", "Edad")
+plots <- list()
+
+for (v in vars) {
+  vec <- meta_pat[[v]]
+  # If numeric variable: 
+  if (is.numeric(vec)) {
+    
+    p <- fviz_pca_ind(res.pca,
+                      addEllipses = FALSE,
+                      repel = TRUE, 
+                      label = "none"
+    ) +
+      geom_point(aes(color = vec), size = 3) +
+      scale_color_viridis_c(option = "plasma") +
+      labs(color = v, title = paste("PCA grouped by", v))
+    
+  } else {
+    # Categorical variable: 
+    p <- fviz_pca_ind(res.pca,
+                      addEllipses = TRUE,
+                      ellipse.level = 0.95,
+                      repel = TRUE,
+                      palette = "Dark2",
+                      habillage = vec, 
+                      label = "none"
+    )  +
+      labs(title = paste("PCA grouped by", v))
+  }
+  
+  # Save plot
+  plots[[v]] <- p
+}
+
+# Combine 4 plots:
+ggarrange(
+  plots$group, plots$Sexo, plots$Otros, plots$Edad,
+  # labels = vars,
+  ncol = 2, nrow = 2
+)
+
+```
+
+
 
 # Data models
 
@@ -320,9 +459,10 @@ ggsave("results/PCA_all_combinations.png",
 
 ### BMI level model
 
-Protein expression level copmparisson related to BMI corrected by Age and Sex
+Protein expression level copmparison related to BMI corrected by Age and Sex
 
 ```{r}
+library(car)
 # reorder metadata to match expr_ALL columns
 meta_pat <- meta_pat[match(colnames(expr_ALL), meta_pat$id), ]
 
@@ -333,29 +473,44 @@ stopifnot(all(colnames(expr_ALL) == meta_pat$id))
 meta_pat$IMC_c  <- scale(meta_pat$IMC, center = TRUE, scale = FALSE)[,1]
 meta_pat$Edad_c <- scale(meta_pat$Edad, center = TRUE, scale = FALSE)[,1]
 
+# Scale numeric covariates to be on similar scales:
+# Center and scale (z-score)
+meta_pat$IMC_s  <- scale(meta_pat$IMC, center = TRUE, scale = TRUE)[,1]
+meta_pat$Edad_s <- scale(meta_pat$Edad, center = TRUE, scale = TRUE)[,1]
+
+# Consider looking for colinarity between predictors: 
+model_vif <- lm(IMC ~ Edad + Sexo + group + Otros, data=meta_pat)
+vif(model_vif)
+plot(model_vif, which = 1, main = "Model Fit")
+```
+
+Drop group (it does not reach vif value = 5, but it's 'measuring' the same).
+Keep the others
+
+```{r}
+# IMC: 
+
 ### Build design matrix
 # Model: Expression ~ IMC + Edad + Sexo
 # (Intercept corresponds to reference level of Sexo)
-design_bmi <- model.matrix(~ IMC_c + Edad_c + Sexo, data = meta_pat)
+design_bmi <- model.matrix(~ IMC_s + Edad_s + Sexo + Otros, data = meta_pat) # Add DB and scaled data: 
+
 colnames(design_bmi)
 # Check design
 print(head(design_bmi))
 
-### Fit limma
+## Fit limma
 # expr_ALL must be numeric matrix
 expr_mat <- as.matrix(expr_ALL)
-
 fit_bmi <- lmFit(expr_mat, design_bmi)
-# Use empirical Bayes with robust options and trend if needed
-fit_bmi <- eBayes(fit_bmi, trend = TRUE, robust = TRUE)
+fit_bmi <- eBayes(fit_bmi, trend = TRUE, robust = TRUE) # Use empirical Bayes with robust options and trend 
 
 ### Extract results for BMI (IMC_c)
 # Determine the exact coefficient name for IMC_c in design
-coef_name <- "IMC_c"
+coef_name <- "IMC_s"
 if(!coef_name %in% colnames(design_bmi)) stop("Coefficient name for BMI not found in design.")
 
-res_bmi <- topTable(fit_bmi, coef = coef_name, number = Inf, sort.by = "P")
-# res contains logFC (effect per unit of IMC_c), AveExpr, t, P.Value, adj.P.Val, B
+res_bmi <- topTable(fit_bmi, coef = coef_name, number = Inf, sort.by = "P") # res contains logFC (effect per unit of IMC_c), AveExpr, t, P.Value, adj.P.Val, B
 head(res_bmi)
 
 ### 5. Add protein names column (rownames are proteins)
@@ -402,11 +557,24 @@ ggsave("results/volcano_IMC_limma.png", p_volcano_bmi, width = 8, height = 6, dp
 ### Group comparisson
 
 ```{r}
-# Design matrix for group comparison (with Age + Sex covariates)
-design_group <- model.matrix(~ group + Edad_c + Sexo, data = meta_pat)
+
+# Anova (F-test): 
+# Design with intercept (recommended)
+design_group <- model.matrix(~ group + Edad_c + Sexo + Otros, data = meta_pat)
+colnames(design_group) <- make.names(colnames(design_group))
+
+# Verify
+stopifnot(qr(design_group)$rank == ncol(design_group))
+
+# Fit model
 fit_group <- lmFit(expr_mat, design_group)
 fit_group <- eBayes(fit_group, trend = TRUE, robust = TRUE)
 
+res_overall <- topTable(fit_group, coef = grep("^group", colnames(design_group)),
+                        number = Inf, sort.by = "F")
+
+
+# Pairwise comparison: 
 # Define contrasts for all pairwise comparisons
 contr.matrix <- makeContrasts(
   OB_vs_NW = groupOB,
@@ -418,6 +586,10 @@ contr.matrix <- makeContrasts(
 # Fit model
 fit2 <- contrasts.fit(fit_group, contr.matrix)
 fit2 <- eBayes(fit2, trend = TRUE, robust = TRUE)
+
+tt_over_norm <- topTable(fit2, coef="OW_vs_NW", number=Inf, adjust.method = "BH")
+tt_obese_norm <- topTable(fit2, coef="OB_vs_NW", number=Inf, adjust.method = "BH")
+tt_obese_over <- topTable(fit2, coef="OB_vs_OW", number=Inf,adjust.method = "BH")
 
 # --- 5. Function to make volcano plots for a given contrast
 make_volcano <- function(fit2, contrast_name, logFC_thr = 0.2, padj_thr = 0.05, top_n = 10) {
@@ -462,22 +634,300 @@ ggsave("results/volcano_OB_vs_OW.png", p_OB_vs_OW, width = 8, height = 6, dpi = 
 
 ```
 
+Display the pairwise comparison in interactive tables: 
 ```{r}
-# Save the results in a res_list
-res_list <- list(
-  OB_vs_NW = topTable(fit2, coef = "OB_vs_NW", number = Inf, sort.by = "P") %>%
-  rownames_to_column("Protein") %>%
-  as.data.frame(),
-  OW_vs_NW = topTable(fit2, coef = "OW_vs_NW", number = Inf, sort.by = "P") %>%
-  rownames_to_column("Protein") %>%
-  as.data.frame(),
-  OB_vs_OW = topTable(fit2, coef = "OB_vs_OW", number = Inf, sort.by = "P") %>%
-  rownames_to_column("Protein") %>%
-  as.data.frame()
+library(DT)
+library(htmltools)
+
+tt_over_norm$proteinID <- rownames(tt_over_norm)
+tt_obese_norm$proteinID <- rownames(tt_obese_norm)
+tt_obese_over$proteinID <- rownames(tt_obese_over)
+
+# Named list of topTables
+tt_list <- list(
+  "OW_vs_NW" = tt_over_norm,
+  "OB_vs_NW" = tt_obese_norm,
+  "OB_vs_OW" = tt_obese_over
 )
 
-kableExtra::kable(res_list$OB_vs_NW %>% dplyr::filter(P.Value < 0.01))
-kableExtra::kable(res_list$OW_vs_NW %>% dplyr::filter(P.Value < 0.01))
-kableExtra::kable(res_list$OB_vs_OW %>% dplyr::filter(P.Value < 0.01))
+# Create a list of datatables
+dt_list <- lapply(seq_along(tt_list), function(i) {
+  tt <- tt_list[[i]]
+  df_name <- names(tt_list)[i]
+  
+  datatable(
+    head(tt, n = nrow(tt)),
+    options = list(
+      pageLength = 5,
+      initComplete = JS(
+        "function(settings, json) {",
+        "$('div.dataTables_wrapper').find('table').css('font-size', '14px');",
+        "$('div.dataTables_wrapper').find('caption').css({'font-size': '16px', 'font-weight': 'bold'});",
+        "}"
+      ),
+      columnDefs = list(
+        list(
+          targets = "_all",
+          render = JS(
+            "function(data, type, row, meta) {",
+            "if (typeof data === 'number') {",
+            "  if (meta.col == 5) {",
+            "    return parseFloat(data).toExponential(2);",
+            "  } else {",
+            "    return parseFloat(data).toFixed(3);",
+            "  }",
+            "} else {",
+            "  return data;",
+            "}",
+            "}"
+          )
+        )
+      )
+    ),
+    rownames = FALSE,
+    caption = df_name
+  )
+})
+
+# Render all tables at once
+browsable(tagList(dt_list))
 ```
 
+# Machine Learning models (in development)
+## Elastic net (glmnet)
+Need to check the code to search possible 'erros'. Code in development: 
+### Goal
+
+To identify proteins that genuinely distinguish between the three weight groups (normal weight (NW), overweight (OW), and obese (OB)) while properly accounting for potential confounders like age, sex, and having diabetes, and without mistaking random noise for true biological signal.
+
+### Challenge
+We’re working with a very small sample size (n = 24, 8 per group) but measuring hundreds or even thousands of proteins. In this “large p, small n” setting, any supervised learning method (whether Random Forest, Lasso, or elastic net) will almost always identify seemingly “important” proteins, even if the data contain no real association between proteins and group labels. This happens simply because, with so many variables, some will align with the outcome by pure chance. Standard importance scores or nominal p-values do not correct for this massive implicit multiple testing, leading to a high risk of false discoveries.
+Our Solution: Permutation-Based Inference
+
+To address this, we use permutation testing (a non-parametric, assumption-free approach to establish a data-driven significance threshold). Null hypothesis (H₀): Protein expression profiles are unrelated to group membership; any observed association is due to random chance.
+
+### Procedure:
+* Randomly shuffle the group labels across samples — this destroys any true biological link between proteins and groups.
+* Re-run the entire analysis pipeline on this permuted data: leave-one-out cross-validation, elastic net fitting, covariate adjustment, and computation of protein importance scores.
+* Record the highest importance score observed across all proteins in that permutation (i.e., the best “fake” result).
+* Repeat this process 100–1,000 times to build a null distribution of maximum importance scores — representing what we’d expect by chance alone.
+
+Key insight: In high-dimensional settings, the real question isn’t whether a protein is “important” in isolation — it’s whether it’s more important than the best spurious signal that arises when hunting through thousands of features. That’s why we focus on the maximum score per permutation.
+
+### Defining Significance
+
+We set our significance threshold at the 95th percentile of this null distribution. Only proteins whose observed importance score exceeds this threshold are considered statistically unlikely under the null hypothesis, effectively controlling the family-wise error rate (FWER) at α = 0.05.
+
+This gives us a rigorous, conservative, and interpretable way to prioritize proteins for downstream validation, even in a severely underpowered cohort.
+
+```{r}
+library(glmnet)
+library(doParallel)
+library(foreach)
+
+# 1. PREPARE DATA 
+set.seed(2025)
+
+# Transpose to samples × proteins
+X_proteins <- t(expr_mat)  # 24 × P
+X_covars   <- model.matrix(~ Edad_c + Sexo + Otros, data = meta_pat)[, -1, drop = FALSE]  # 24 × K
+y          <- meta_pat$group  # factor with 3 levels
+
+# Combine: proteins + covariates
+X_full <- cbind(X_proteins, X_covars)  # 24 × (P + K)
+
+# Response as numeric (1,2,3) for multinomial
+y_num <- as.numeric(y)
+
+# Identify protein column indices (for importance extraction)
+protein_names <- colnames(X_proteins)
+protein_idx   <- 1:ncol(X_proteins)
+covar_idx     <- (ncol(X_proteins) + 1):ncol(X_full)
+
+# 2. LOO LOOP: FIT MODEL, RECORD COEFFICIENTS
+n <- nrow(X_full)
+alpha <- 0.9  # favor L1 (sparse selection); 1 = Lasso, 0 = Ridge
+
+# Store coefficients for proteins only (ignore covariates)
+coef_matrix <- matrix(0, nrow = length(protein_names), ncol = n)
+colnames(coef_matrix) <- paste0("LOO_", 1:n)
+rownames(coef_matrix) <- protein_names
+
+# Optional: parallelize (n=24 is small, but okay)
+cl <- makeCluster(min(detectCores(), 4))
+registerDoParallel(cl)
+
+results <- foreach(i = 1:n, .packages = c("glmnet")) %dopar% {
+  # Leave out sample i
+  X_train <- X_full[-i, , drop = FALSE]
+  y_train <- y_num[-i]
+  
+  # Standardize predictors (glmnet does this internally, but we do it for clarity)
+  # Note: glmnet standardizes by default; we let it handle it
+  
+  # Fit multinomial elastic net
+  # Use lambda.min from CV? No—too unstable at n=23. Instead, use lambda.1se or fixed small lambda.
+  # We'll use a *fixed small lambda* to ensure some regularization without CV.
+  
+  fit <- glmnet(
+    x = X_train,
+    y = factor(y_train),
+    family = "multinomial",
+    alpha = alpha,
+    lambda = 0.01,  # small but non-zero; prevents overfitting
+    standardize = TRUE,
+    thresh = 1e-5,
+    maxit = 1e5
+  )
+  
+  # Extract coefficients for the final lambda (single value)
+  # glmnet returns coef for each class; we take L1 norm across classes
+  coefs <- coef(fit, s = 0.01)
+  
+  # coefs is a list of 3 (one per class); combine via max or L1 norm
+  # We take the maximum absolute coefficient across classes
+  coef_vec <- rep(0, nrow(X_train))
+  for (cls in seq_along(coefs)) {
+    c_vec <- as.vector(coefs[[cls]][-1])  # drop intercept
+    coef_vec <- pmax(coef_vec, abs(c_vec))
+  }
+  
+  # Return only protein coefficients
+  coef_vec[protein_idx]
+}
+
+# stopCluster(cl)
+
+# 3. AGGREGATE LOO COEFFICIENTS 
+# Rebuild matrix
+for (i in 1:n) {
+  coef_matrix[, i] <- results[[i]]
+}
+
+# Feature stability: proportion of LOO folds where |coef| > 0
+nonzero_freq <- rowMeans(coef_matrix != 0)
+
+# Mean absolute coefficient (magnitude)
+mean_coef <- rowMeans(coef_matrix)
+
+# Combined score: stability × magnitude
+importance_score <- nonzero_freq * mean_coef
+
+# Rank proteins
+ranked_proteins <- sort(importance_score, decreasing = TRUE)
+
+# 4. PERMUTATION BASELINE
+# To assess how often noise gives high scores
+
+n_perm <- 100
+null_scores <- foreach(p = 1:n_perm, 
+                       .packages = c("glmnet"),
+                       .export = c("X_full", "y_num", "n", "protein_idx", "alpha")) %dopar% {
+                         set.seed(1000 + p)
+                         y_perm <- sample(y_num)
+                         
+                         coef_mat_null <- matrix(0, nrow = length(protein_names), ncol = n)
+                         
+                         for (i in 1:n) {
+                           X_train <- X_full[-i, , drop = FALSE]
+                           y_train <- y_perm[-i]
+                           
+                           # Optional: skip if degenerate (not strictly needed but safe)
+                           if (length(unique(y_train)) < 2) {
+                             next
+                           }
+                           
+                           fit <- glmnet(
+                             x = X_train,
+                             y = factor(y_train),
+                             family = "multinomial",
+                             alpha = alpha,
+                             lambda = 0.01,
+                             standardize = TRUE,
+                             thresh = 1e-5
+                           )
+                           
+                           coefs <- coef(fit, s = 0.01)
+                           coef_vec <- rep(0, ncol(X_train))
+                           
+                           for (cls in seq_along(coefs)) {
+                             # ✅ CORRECT: drop intercept (first element) with -1
+                             c_vec <- as.vector(coefs[[cls]][-1])  # ←←← THIS IS THE FIX
+                             coef_vec <- pmax(coef_vec, abs(c_vec))
+                           }
+                           
+                           coef_mat_null[, i] <- coef_vec[protein_idx]
+                         }
+                         
+                         # Compute importance score per protein
+                         stability_null <- rowMeans(coef_mat_null != 0, na.rm = TRUE)
+                         magnitude_null <- rowMeans(coef_mat_null, na.rm = TRUE)
+                         score_null <- stability_null * magnitude_null
+                         
+                         # Return max null score (for thresholding)
+                         max(score_null, na.rm = TRUE)
+                       }
+null_thresh <- quantile(unlist(null_scores), 0.95)
+
+# Significant proteins
+sig_proteins <- names(which(importance_score > null_thresh))
+
+cat("Proteins exceeding 95% null threshold:", length(sig_proteins), "\n")
+head(ranked_proteins, 10)
+
+library(ggplot2)
+# Real scores: one per protein
+df_real <- data.frame(
+  Score = importance_score,
+  Type = "Real"
+)
+
+# Null scores: one per permutation (each is a MAX null score)
+df_null <- data.frame(
+  Score = unlist(null_scores),  # ensure it's a vector
+  Type = "Null (max per perm)"
+)
+
+# Combine for ggplot
+df_plot <- rbind(df_real, df_null)
+
+# Plot
+library(ggplot2)
+ggplot(df_plot, aes(x = Score, fill = Type)) +
+  geom_density(alpha = 0.6) +  # density is smoother than histogram for this
+  geom_vline(xintercept = null_thresh, linetype = "dashed", color = "red", size = 1) +
+  labs(
+    title = "Real protein importance scores vs. null distribution",
+    subtitle = paste("Null threshold (95%):", round(null_thresh, 3)),
+    x = "Importance score (stability × magnitude)",
+    y = "Density"
+  ) +
+  scale_fill_manual(values = c("Real" = "steelblue", "Null (max per perm)" = "firebrick")) +
+  theme_minimal()
+
+
+top_proteins <- head(sort(importance_score, decreasing = TRUE), 5)
+df_top <- data.frame(
+  Score = top_proteins,
+  Label = names(top_proteins)
+)
+
+ggplot(df_plot, aes(x = Score, fill = Type)) +
+  geom_density(alpha = 0.6) +
+  geom_vline(xintercept = null_thresh, linetype = "dashed", color = "red", size = 1) +
+  geom_point(data = df_top, aes(x = Score, y = 0), 
+             color = "black", size = 3, inherit.aes = FALSE) +
+  geom_text(data = df_top, aes(x = Score, y = 0.1, label = Label), 
+            hjust = 0.5, vjust = -1, inherit.aes = FALSE) +
+  labs(
+    title = "Real vs. Null Importance Scores",
+    subtitle = paste("Threshold (95% null):", round(null_thresh, 3)),
+    x = "Importance score",
+    y = "Density"
+  ) +
+  scale_fill_manual(values = c("Real" = "steelblue", "Null (max per perm)" = "firebrick")) +
+  theme_minimal()
+
+stopCluster(cl)
+
+```
