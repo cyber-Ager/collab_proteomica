@@ -12,6 +12,7 @@ date: "January 10, 2025"
 format: 
   html:
     code-fold: true
+    embed-resources: true
 ---
 
 ## Organize the data
@@ -62,7 +63,17 @@ if (!require("factoextra", quietly = TRUE)) {
   BiocManager::install("factoextra")
 }
 
-if (!requireNamespace("limma", quietly = TRUE)) BiocManager::install("limma")
+if (!requireNamespace("limma", quietly = TRUE)) {
+  BiocManager::install("limma")
+  }
+
+if (!requireNamespace("DT", quietly = TRUE)) {
+  install.packages("DT")
+  }
+
+if (!requireNamespace("htmltools", quietly = TRUE)) {
+  install.packages("htmltools")
+  }
 ```
 
 
@@ -78,6 +89,8 @@ library(ggrepel)
 library(limma)
 library(tibble)
 library(here)
+library(DT)
+library(htmltools)
 
 
 ```
@@ -601,9 +614,28 @@ b <- ggplot(protein_stats, aes(x = mean_expr, y = sd_expr)) +
 a | b
 ```
 
+## Outlier exclusion
+
+As we have seen that there are two individuals that can clearly be differentiated with the rest in the heat map, we decide to remove them: **OB8 and OW8**
+
+::: {.callout-warning}
+## Importance of the Oulier's origin
+
+It is imporatnt to know where are the outliers coming from. We decide to eliminate because we saw that the difference of these samples with the rest of the population is significant and can be caused by an artifact, but it is **neccesary to determine the origin of this bias** in order to trust the results of the analysis.**
+
+:::
+
+```{r}
+# Eliminate it from the exor_ALL matrix
+expr_ALL <- expr_ALL[,!colnames(expr_ALL) %in% c("OW8", "OB8")]
+
+meta_pat <- meta_pat[!meta_pat$id %in% c("OW8", "OB8"),]
+```
+
+
 ## Principal Component Analysis
 
-This section performs a principal component analysis to explore global patterns in the protein expression data. First, the sample metadata is reordered so that it matches the order of samples in the expression matrix. This is essential to ensure that each sample is correctly annotated. The expression matrix is then transposed so that samples are treated as observations and proteins as variables, which is required for principal component analysis. The analysis reduces thousands of protein measurements into a small number of components that summarize the main sources of variation in the data.
+This section performs a principal component analysis to explore global patterns in the protein expression data. First, the sample metadata is reordered so that it matches the order of samples in the expression matrix. This is essential to ensure that each sample is correctly annotated. The expression matrix is then transposed so that samples are treated as observations and proteins as variables, which is required for principal component analysis. The analysis **reduces thousands of protein measurements into a small number of components that summarize the main sources of variation** in the data.
 
 If the variable is numeric, such as age, samples are colored along a continuous scale to show gradients across the data. If the variable is categorical, such as group or sex, samples are colored by category and confidence ellipses are added to visualize clustering tendencies. This approach helps evaluate whether samples with shared characteristics tend to group together in the global expression space. The resulting plots are arranged into a single figure for side by side comparison.
 
@@ -676,7 +708,7 @@ ggsave("results/PCA_all_combinations.png",
 ```
 
 ![](results/PCA_all_combinations.png)
-
+We can see how the **PC4** (for example when plotting it against PC2) seems to capturate a bit the effect of the sex in the population. These indications determine the need to correct the analyses by gender.
 
 ```{r, warning = FALSE, message=FALSE}
 # Add groups to see if cluster together
@@ -731,15 +763,13 @@ ggarrange(
 
 ```
 
-
-
 # Data models
 
 ## Individual protein levels
 
 ### BMI level model
 
-Now, we are going to prepare the data for statistical modeling of individual protein expression levels. The metadata is again aligned with the expression matrix to guarantee correct sample matching. Body mass index and age are transformed in two ways. First, they are centered to make model interpretation more intuitive. Second, they are standardized so that all numeric predictors are on comparable scales, which improves model stability. The objective is to analyze how protein levels changes if the bmi changes. 
+Now, we are going to prepare the data for statistical modeling of individual protein expression levels. The metadata is again aligned with the expression matrix to guarantee correct sample matching. **Body mass index and age are transformed in two ways**. First, they are **centered** (in 0) **to make model interpretation more intuitive**. Second, they are **standardized** so that **all numeric predictors** are on **comparable scales**, which improves model stability. The objective is to analyze how protein levels changes if the bmi changes. 
 
 A preliminary linear model is fitted to evaluate collinearity among predictors. Variance inflation factors and diagnostic plots are used to check whether predictors provide redundant information. This step ensures that subsequent models are statistically sound and interpretable.
 
@@ -768,9 +798,9 @@ plot(model_vif, which = 1, main = "Model Fit")
 
 In this case, we drop group (it does not reach vif value = 5, but it's 'measuring' the same as the bmi).
 
-After that, a multivariable linear model is fitted to test the association between protein expression and body mass index while adjusting for age, sex, and other covariates. A design matrix is constructed that encodes these predictors in a form suitable for high dimensional modeling. The limma framework is then applied to fit the model to all proteins simultaneously.
+After that, a **multivariable linear model** is fitted to test the association between **protein expression and body mass index** while **adjusting for age, sex, and other covariates**. A design matrix is constructed that encodes these predictors in a form suitable for high dimensional modeling. The **limma framework is then applied** to fit the model to all proteins simultaneously.
 
-Empirical Bayes moderation is used to improve variance estimation, which is particularly important when sample sizes are limited. Results for the body mass index effect are extracted for all proteins and corrected for multiple testing. A volcano plot is generated to visualize both the magnitude and statistical significance of associations. Proteins with stronger and more significant associations are highlighted and labeled. The plot is saved for inclusion in the report.
+Empirical Bayes moderation is used to improve variance estimation, which is particularly important when sample sizes are limited. Results for the body mass index effect are extracted for all proteins and **corrected for multiple testing**. A volcano plot is generated to visualize both the magnitude and statistical significance of associations. Proteins with stronger and more significant associations are highlighted and labeled. The plot is saved for inclusion in the report.
 
 ```{r, warning = FALSE, message=FALSE}
 # IMC: 
@@ -796,8 +826,57 @@ coef_name <- "IMC_s"
 if(!coef_name %in% colnames(design_bmi)) stop("Coefficient name for BMI not found in design.")
 
 res_bmi <- topTable(fit_bmi, coef = coef_name, number = Inf, sort.by = "P") # res contains logFC (effect per unit of IMC_c), AveExpr, t, P.Value, adj.P.Val, B
-head(res_bmi)
+```
 
+
+```{r}
+
+
+# Add proteinID as a column
+res_bmi$proteinID <- rownames(res_bmi)
+
+# Optional: move proteinID to first column
+res_bmi <- res_bmi[, c("proteinID", setdiff(colnames(res_bmi), "proteinID"))]
+
+dt_bmi <- datatable(
+  res_bmi,
+  options = list(
+    pageLength = 5,
+    initComplete = JS(
+      "function(settings, json) {",
+      "$('div.dataTables_wrapper').find('table').css('font-size', '14px');",
+      "$('div.dataTables_wrapper').find('caption').css({'font-size': '16px', 'font-weight': 'bold'});",
+      "}"
+    ),
+    columnDefs = list(
+      list(
+        targets = "_all",
+        render = JS(
+          "function(data, type, row, meta) {",
+          "  if (typeof data === 'number') {",
+          "    if (meta.col == 4 || meta.col == 5) {",  
+          "      return parseFloat(data).toExponential(2);",
+          "    } else {",
+          "      return parseFloat(data).toFixed(3);",
+          "    }",
+          "  } else {",
+          "    return data;",
+          "  }",
+          "}"
+        )
+      )
+    )
+  ),
+  rownames = FALSE,
+  caption = "BMI multivariate analysis results"
+)
+
+browsable(tagList(dt_bmi))
+
+```
+
+
+```{r, warning = FALSE, message=FALSE}
 ### 5. Add protein names column (rownames are proteins)
 res_bmi <- res_bmi %>% 
   tibble::rownames_to_column(var = "Protein") %>%
@@ -838,6 +917,13 @@ print(p_volcano_bmi)
 # Save to file (PNG)
 ggsave("results/volcano_IMC_limma.png", p_volcano_bmi, width = 8, height = 6, dpi = 300)
 ```
+
+The results seem to be really close to be sttistically significant (<0.05). Take into account that as we are checking the **BMI** (there is no any group information), we are **able to correct by DM**. This means that the differentially expressed **proteins are independent to DM**. 
+
+:::{.callout-important}
+When comparing between groups it is **not possible to remove DM effect** completely, as the NW group has 0 cases of DM.
+
+:::
 
 ### Group comparisson
 
@@ -982,244 +1068,6 @@ dt_list <- lapply(seq_along(tt_list), function(i) {
 browsable(tagList(dt_list))
 ```
 
-# Machine Learning models 
-In that case, we are going to try a different approach (not a Differention expression analysis) to see if we can obtain some significant results. 
-
-## Elastic net (glmnet)
-### Goal
-
-To identify proteins that genuinely distinguish between the three weight groups (normal weight (NW), overweight (OW), and obese (OB)) while properly accounting for potential confounders like age, sex, and having diabetes, and without mistaking random noise for true biological signal.
-
-### Challenge
-We’re working with a very small sample size (n = 24, 8 per group) but measuring hundreds or even thousands of proteins. In this “large p, small n” setting, any supervised learning method (whether Random Forest, Lasso, or elastic net) will almost always identify seemingly “important” proteins, even if the data contain no real association between proteins and group labels. This happens simply because, with so many variables, some will align with the outcome by pure chance. Standard importance scores or nominal p-values do not correct for this massive implicit multiple testing, leading to a high risk of false discoveries.
-
-So we are going to perform a Permutation-Based Inference analysis.To address this, we use permutation testing (a non-parametric, assumption-free approach to establish a data-driven significance threshold). Null hypothesis (H₀): Protein expression profiles are unrelated to group membership; any observed association is due to random chance.
-
-### Procedure:
-* Randomly shuffle the group labels across samples — this destroys any true biological link between proteins and groups.
-* Re-run the entire analysis pipeline on this permuted data: leave-one-out cross-validation, elastic net fitting, covariate adjustment, and computation of protein importance scores.
-* Record the highest importance score observed across all proteins in that permutation (i.e., the best “fake” result).
-* Repeat this process 100–1,000 times to build a null distribution of maximum importance scores — representing what we’d expect by chance alone.
-
-Observation: In high-dimensional settings, the real question isn’t whether a protein is “important” in isolation — it’s whether it’s more important than the best spurious signal that arises when hunting through thousands of features. That’s why we focus on the maximum score per permutation.
-
-### Defining Significance
-
-We set our significance threshold at the 95th percentile of this null distribution. Only proteins whose observed importance score exceeds this threshold are considered statistically unlikely under the null hypothesis, effectively controlling the family-wise error rate (FWER) at α = 0.05.
-
-This gives us a rigorous, conservative, and interpretable way to prioritize proteins for downstream validation, even in a severely underpowered cohort.
-
-```{r, warning = FALSE, message=FALSE}
-library(glmnet)
-library(doParallel)
-library(foreach)
-
-# 1. PREPARE DATA 
-set.seed(2025)
-
-# Transpose to samples × proteins
-X_proteins <- t(expr_mat)  # 24 × P
-X_covars   <- model.matrix(~ Edad_c + Sexo + Otros, data = meta_pat)[, -1, drop = FALSE]  # 24 × K
-y          <- meta_pat$group  # factor with 3 levels
-
-# Combine: proteins + covariates
-X_full <- cbind(X_proteins, X_covars)  # 24 × (P + K)
-
-# Response as numeric (1,2,3) for multinomial
-y_num <- as.numeric(y)
-
-# Identify protein column indices (for importance extraction)
-protein_names <- colnames(X_proteins)
-protein_idx   <- 1:ncol(X_proteins)
-covar_idx     <- (ncol(X_proteins) + 1):ncol(X_full)
-
-# 2. LOO LOOP: FIT MODEL, RECORD COEFFICIENTS
-n <- nrow(X_full)
-alpha <- 0.9  # favor L1 (sparse selection); 1 = Lasso, 0 = Ridge
-
-# Store coefficients for proteins only (ignore covariates)
-coef_matrix <- matrix(0, nrow = length(protein_names), ncol = n)
-colnames(coef_matrix) <- paste0("LOO_", 1:n)
-rownames(coef_matrix) <- protein_names
-
-# Optional: parallelize (n=24 is small, but okay)
-cl <- makeCluster(min(detectCores(), 4))
-registerDoParallel(cl)
-
-results <- foreach(i = 1:n, .packages = c("glmnet")) %dopar% {
-  # Leave out sample i
-  X_train <- X_full[-i, , drop = FALSE]
-  y_train <- y_num[-i]
-  
-  # Standardize predictors (glmnet does this internally, but we do it for clarity)
-  # Note: glmnet standardizes by default; we let it handle it
-  
-  # Fit multinomial elastic net
-  # Use lambda.min from CV? No—too unstable at n=23. Instead, use lambda.1se or fixed small lambda.
-  # We'll use a *fixed small lambda* to ensure some regularization without CV.
-  
-  fit <- glmnet(
-    x = X_train,
-    y = factor(y_train),
-    family = "multinomial",
-    alpha = alpha,
-    lambda = 0.01,  # small but non-zero; prevents overfitting
-    standardize = TRUE,
-    thresh = 1e-5,
-    maxit = 1e5
-  )
-  
-  # Extract coefficients for the final lambda (single value)
-  # glmnet returns coef for each class; we take L1 norm across classes
-  coefs <- coef(fit, s = 0.01)
-  
-  # coefs is a list of 3 (one per class); combine via max or L1 norm
-  # We take the maximum absolute coefficient across classes
-  coef_vec <- rep(0, nrow(X_train))
-  for (cls in seq_along(coefs)) {
-    c_vec <- as.vector(coefs[[cls]][-1])  # drop intercept
-    coef_vec <- pmax(coef_vec, abs(c_vec))
-  }
-  
-  # Return only protein coefficients
-  coef_vec[protein_idx]
-}
-
-# stopCluster(cl)
-
-# 3. AGGREGATE LOO COEFFICIENTS 
-# Rebuild matrix
-for (i in 1:n) {
-  coef_matrix[, i] <- results[[i]]
-}
-
-# Feature stability: proportion of LOO folds where |coef| > 0
-nonzero_freq <- rowMeans(coef_matrix != 0)
-
-# Mean absolute coefficient (magnitude)
-mean_coef <- rowMeans(coef_matrix)
-
-# Combined score: stability × magnitude
-importance_score <- nonzero_freq * mean_coef
-
-# Rank proteins
-ranked_proteins <- sort(importance_score, decreasing = TRUE)
-
-# 4. PERMUTATION BASELINE
-# To assess how often noise gives high scores
-
-n_perm <- 100
-null_scores <- foreach(p = 1:n_perm, 
-                       .packages = c("glmnet"),
-                       .export = c("X_full", "y_num", "n", "protein_idx", "alpha")) %dopar% {
-                         set.seed(1000 + p)
-                         y_perm <- sample(y_num)
-                         
-                         coef_mat_null <- matrix(0, nrow = length(protein_names), ncol = n)
-                         
-                         for (i in 1:n) {
-                           X_train <- X_full[-i, , drop = FALSE]
-                           y_train <- y_perm[-i]
-                           
-                           # Optional: skip if degenerate (not strictly needed but safe)
-                           if (length(unique(y_train)) < 2) {
-                             next
-                           }
-                           
-                           fit <- glmnet(
-                             x = X_train,
-                             y = factor(y_train),
-                             family = "multinomial",
-                             alpha = alpha,
-                             lambda = 0.01,
-                             standardize = TRUE,
-                             thresh = 1e-5
-                           )
-                           
-                           coefs <- coef(fit, s = 0.01)
-                           coef_vec <- rep(0, ncol(X_train))
-                           
-                           for (cls in seq_along(coefs)) {
-                             # ✅ CORRECT: drop intercept (first element) with -1
-                             c_vec <- as.vector(coefs[[cls]][-1])  # ←←← THIS IS THE FIX
-                             coef_vec <- pmax(coef_vec, abs(c_vec))
-                           }
-                           
-                           coef_mat_null[, i] <- coef_vec[protein_idx]
-                         }
-                         
-                         # Compute importance score per protein
-                         stability_null <- rowMeans(coef_mat_null != 0, na.rm = TRUE)
-                         magnitude_null <- rowMeans(coef_mat_null, na.rm = TRUE)
-                         score_null <- stability_null * magnitude_null
-                         
-                         # Return max null score (for thresholding)
-                         max(score_null, na.rm = TRUE)
-                       }
-null_thresh <- quantile(unlist(null_scores), 0.95)
-
-# Significant proteins
-sig_proteins <- names(which(importance_score > null_thresh))
-
-cat("Proteins exceeding 95% null threshold:", length(sig_proteins), "\n")
-head(ranked_proteins, 10)
-
-library(ggplot2)
-# Real scores: one per protein
-df_real <- data.frame(
-  Score = importance_score,
-  Type = "Real"
-)
-
-# Null scores: one per permutation (each is a MAX null score)
-df_null <- data.frame(
-  Score = unlist(null_scores),  # ensure it's a vector
-  Type = "Null (max per perm)"
-)
-
-# Combine for ggplot
-df_plot <- rbind(df_real, df_null)
-
-# Plot
-library(ggplot2)
-ggplot(df_plot, aes(x = Score, fill = Type)) +
-  geom_density(alpha = 0.6) +  # density is smoother than histogram for this
-  geom_vline(xintercept = null_thresh, linetype = "dashed", color = "red", size = 1) +
-  labs(
-    title = "Real protein importance scores vs. null distribution",
-    subtitle = paste("Null threshold (95%):", round(null_thresh, 3)),
-    x = "Importance score (stability × magnitude)",
-    y = "Density"
-  ) +
-  scale_fill_manual(values = c("Real" = "steelblue", "Null (max per perm)" = "firebrick")) +
-  theme_minimal()
-
-
-top_proteins <- head(sort(importance_score, decreasing = TRUE), 5)
-df_top <- data.frame(
-  Score = top_proteins,
-  Label = names(top_proteins)
-)
-
-ggplot(df_plot, aes(x = Score, fill = Type)) +
-  geom_density(alpha = 0.6) +
-  geom_vline(xintercept = null_thresh, linetype = "dashed", color = "red", size = 1) +
-  geom_point(data = df_top, aes(x = Score, y = 0), 
-             color = "black", size = 3, inherit.aes = FALSE) +
-  geom_text(data = df_top, aes(x = Score, y = 0.1, label = Label), 
-            hjust = 0.5, vjust = -1, inherit.aes = FALSE) +
-  labs(
-    title = "Real vs. Null Importance Scores",
-    subtitle = paste("Threshold (95% null):", round(null_thresh, 3)),
-    x = "Importance score",
-    y = "Density"
-  ) +
-  scale_fill_manual(values = c("Real" = "steelblue", "Null (max per perm)" = "firebrick")) +
-  theme_minimal()
-
-stopCluster(cl)
-
-```
 
 # Conclusions
 
@@ -1227,20 +1075,19 @@ In summary, we reached the following conclusions.
 
 ## Observational study
 
-* We identified two individuals, 0B8 and 0W8, with unusual expression patterns that form isolated clusters, as shown in the heatmap. It would be important to review the quality control metrics and metadata for these individuals to determine whether there is a technical or biological explanation.
-* The data did not cluster according to the predefined groups. Instead of three clearly separated groups (normal weight, overweight, and obese), we observed three mixed clusters: one consisting of two outlier samples, one cluster containing mostly normal weight individuals with some overweight and obese samples, and another cluster composed mainly of overweight and obese individuals with one normal weight sample.
+* We identified two individuals, **0B8 and 0W8**, with unusual expression patterns that form isolated clusters, as shown in the heatmap. It would be **important to review the quality control metrics and metadata for these individuals** to determine whether there is a technical or biological explanation.
+* The data did not cluster according to the predefined groups. Instead of three clearly separated groups (normal weight, overweight, and obese), we observed three mixed clusters: one consisting of two outlier samples, one cluster containing mostly normal weight individuals with some overweight and obese samples, and another cluster composed mainly of overweight and obese individuals with one normal weight sample. It could be interesting to see what is generating that **first cluster** with **almost all NW individuals** and **what characteristics are shared with the rest of the OB and OW** individuals of the same group.
 * No clear differences associated with age or sex were observed.
 
 ## Differential expression study
-
-* We did not identify any statistically significant results after correcting for multiple testing, either in pairwise group comparisons (for example, normal weight versus obese or obese versus overweight) or when modeling body mass index as a continuous variable across all samples.
-* Enrichment analysis was not performed because no sets of differentially expressed proteins were identified.
-* We also evaluated a machine learning approach using an elastic net classifier to assess whether it could outperform standard differential expression analysis. Permutation tests were included to ensure that any classification performance exceeded what would be expected by chance. No statistically significant results were observed using this approach.
+* The analysis was performed **removing the outliers**, so it is **important to make sure that these samples can be removed**.
+* We did not identify any statistically significant results after correcting for multiple testing. But the **adjusted p-values in BMI** analysis are **close to be statistically significant**, this shows that there could be a relationship between those proteins and the phenotype of interest. Would be **interesting to study the most significant proteins**.
 
 ## Take home message
 
 * We observe trends in protein expression that suggest potential group specific signatures; however, these differences do not remain statistically significant after correction for multiple testing. This is likely due to the small sample size, with only eight individuals included in the study. Increasing the sample size would likely improve statistical power.
 * Two mixed clusters were identified. It would be valuable to investigate protein expression differences between these clusters and to assess whether they reflect biological patterns not directly related to body mass index, such as differences in body fat composition. Having access to body fat percentage measurements would be particularly informative.
+* We have found that in this small dataset the analysis of BMI is more interesting that the group analysis, due to the imposibilitie of correcting the groups' information by DM.
 
 
 
