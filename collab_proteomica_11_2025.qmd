@@ -296,12 +296,12 @@ if ("DM" %in% names(meta_pat)) {
 }
 
 # Quick contingency tables (printed)
-cat("Counts: group by k3\n")
-print(table(meta_pat$k3, meta_pat$group))
-cat("\nCounts: Sexo by k3\n")
-print(table(meta_pat$k3, meta_pat$Sexo))
-cat("\nCounts: DM_var by k3\n")
-print(table(meta_pat$k3, meta_pat$DM_var))
+# cat("Counts: group by k3\n")
+# print(table(meta_pat$k3, meta_pat$group))
+# cat("\nCounts: Sexo by k3\n")
+# print(table(meta_pat$k3, meta_pat$Sexo))
+# cat("\nCounts: DM_var by k3\n")
+# print(table(meta_pat$k3, meta_pat$DM_var))
 
 # 1) Bar plot: group per k3 (counts)
 p1 <- p1 <- ggplot(meta_pat, aes(x = k3, fill = group)) +
@@ -412,7 +412,7 @@ top20_table <- cbind(top20_table, as.data.frame(cluster_means[top20, , drop = FA
 top20_table <- top20_table %>% arrange(desc(range))
 
 # Print the summary table
-knitr::kable(print(top20_table))
+knitr::kable(top20_table)
 ```
 
 
@@ -476,7 +476,7 @@ top20_table <- cbind(top20_table, as.data.frame(cluster_means[top20, , drop = FA
 top20_table <- top20_table %>% arrange(desc(range))
 
 # Print the summary table
-knitr::kable(print(top20_table))
+knitr::kable(top20_table)
 ```
 
 
@@ -603,8 +603,11 @@ a | b
 
 ## Principal Component Analysis
 
-Check if there is any principal component that shows a difference between any of the covariables.
-```{r}
+This section performs a principal component analysis to explore global patterns in the protein expression data. First, the sample metadata is reordered so that it matches the order of samples in the expression matrix. This is essential to ensure that each sample is correctly annotated. The expression matrix is then transposed so that samples are treated as observations and proteins as variables, which is required for principal component analysis. The analysis reduces thousands of protein measurements into a small number of components that summarize the main sources of variation in the data.
+
+If the variable is numeric, such as age, samples are colored along a continuous scale to show gradients across the data. If the variable is categorical, such as group or sex, samples are colored by category and confidence ellipses are added to visualize clustering tendencies. This approach helps evaluate whether samples with shared characteristics tend to group together in the global expression space. The resulting plots are arranged into a single figure for side by side comparison.
+
+```{r, warning = FALSE, message=FALSE}
 # Ensure metadata is ordered to match expression matrix
 meta_pat <- meta_pat[match(colnames(expr_ALL), meta_pat$id), ]
 
@@ -669,12 +672,13 @@ ggsave("results/PCA_all_combinations.png",
        final_plot,
        width = 16, height = 40, dpi = 300)
 
+# print(final_plot)
 ```
 
-![](PCA_all_combinations.png)
-Use other PCA option to see ellipses from the different groups: 
+![](results/PCA_all_combinations.png)
 
-```{r}
+
+```{r, warning = FALSE, message=FALSE}
 # Add groups to see if cluster together
 library(factoextra)
 library(ggpubr)
@@ -735,9 +739,11 @@ ggarrange(
 
 ### BMI level model
 
-Protein expression level copmparison related to BMI corrected by Age and Sex
+Now, we are going to prepare the data for statistical modeling of individual protein expression levels. The metadata is again aligned with the expression matrix to guarantee correct sample matching. Body mass index and age are transformed in two ways. First, they are centered to make model interpretation more intuitive. Second, they are standardized so that all numeric predictors are on comparable scales, which improves model stability. The objective is to analyze how protein levels changes if the bmi changes. 
 
-```{r}
+A preliminary linear model is fitted to evaluate collinearity among predictors. Variance inflation factors and diagnostic plots are used to check whether predictors provide redundant information. This step ensures that subsequent models are statistically sound and interpretable.
+
+```{r, warning = FALSE, message=FALSE}
 library(car)
 # reorder metadata to match expr_ALL columns
 meta_pat <- meta_pat[match(colnames(expr_ALL), meta_pat$id), ]
@@ -760,10 +766,13 @@ vif(model_vif)
 plot(model_vif, which = 1, main = "Model Fit")
 ```
 
-Drop group (it does not reach vif value = 5, but it's 'measuring' the same).
-Keep the others
+In this case, we drop group (it does not reach vif value = 5, but it's 'measuring' the same as the bmi).
 
-```{r}
+After that, a multivariable linear model is fitted to test the association between protein expression and body mass index while adjusting for age, sex, and other covariates. A design matrix is constructed that encodes these predictors in a form suitable for high dimensional modeling. The limma framework is then applied to fit the model to all proteins simultaneously.
+
+Empirical Bayes moderation is used to improve variance estimation, which is particularly important when sample sizes are limited. Results for the body mass index effect are extracted for all proteins and corrected for multiple testing. A volcano plot is generated to visualize both the magnitude and statistical significance of associations. Proteins with stronger and more significant associations are highlighted and labeled. The plot is saved for inclusion in the report.
+
+```{r, warning = FALSE, message=FALSE}
 # IMC: 
 
 ### Build design matrix
@@ -832,7 +841,11 @@ ggsave("results/volcano_IMC_limma.png", p_volcano_bmi, width = 8, height = 6, dp
 
 ### Group comparisson
 
-```{r}
+Finally, we wanted to evaluate differences in protein expression between predefined groups. First, a linear model is fitted that includes group as the main factor while adjusting for age, sex, and other covariates. An overall statistical test identifies proteins that vary across groups. Then, specific pairwise group comparisons are defined using contrasts.
+
+For each contrast, the model is refitted and statistical results are extracted. A reusable function generates volcano plots for each comparison, highlighting proteins with both large expression differences and strong statistical support. The most significant proteins are labeled to facilitate biological interpretation. As output, you can also find several interactive tables with teh results of the different comparisons: 
+
+```{r, warning = FALSE, message=FALSE}
 
 # Anova (F-test): 
 # Design with intercept (recommended)
@@ -911,7 +924,7 @@ ggsave("results/volcano_OB_vs_OW.png", p_OB_vs_OW, width = 8, height = 6, dpi = 
 ```
 
 Display the pairwise comparison in interactive tables: 
-```{r}
+```{r, warning = FALSE, message=FALSE}
 library(DT)
 library(htmltools)
 
@@ -969,18 +982,18 @@ dt_list <- lapply(seq_along(tt_list), function(i) {
 browsable(tagList(dt_list))
 ```
 
-# Machine Learning models (in development)
+# Machine Learning models 
+In that case, we are going to try a different approach (not a Differention expression analysis) to see if we can obtain some significant results. 
+
 ## Elastic net (glmnet)
-Need to check the code to search possible 'erros'. Code in development: 
 ### Goal
 
 To identify proteins that genuinely distinguish between the three weight groups (normal weight (NW), overweight (OW), and obese (OB)) while properly accounting for potential confounders like age, sex, and having diabetes, and without mistaking random noise for true biological signal.
 
 ### Challenge
 We’re working with a very small sample size (n = 24, 8 per group) but measuring hundreds or even thousands of proteins. In this “large p, small n” setting, any supervised learning method (whether Random Forest, Lasso, or elastic net) will almost always identify seemingly “important” proteins, even if the data contain no real association between proteins and group labels. This happens simply because, with so many variables, some will align with the outcome by pure chance. Standard importance scores or nominal p-values do not correct for this massive implicit multiple testing, leading to a high risk of false discoveries.
-Our Solution: Permutation-Based Inference
 
-To address this, we use permutation testing (a non-parametric, assumption-free approach to establish a data-driven significance threshold). Null hypothesis (H₀): Protein expression profiles are unrelated to group membership; any observed association is due to random chance.
+So we are going to perform a Permutation-Based Inference analysis.To address this, we use permutation testing (a non-parametric, assumption-free approach to establish a data-driven significance threshold). Null hypothesis (H₀): Protein expression profiles are unrelated to group membership; any observed association is due to random chance.
 
 ### Procedure:
 * Randomly shuffle the group labels across samples — this destroys any true biological link between proteins and groups.
@@ -988,7 +1001,7 @@ To address this, we use permutation testing (a non-parametric, assumption-free a
 * Record the highest importance score observed across all proteins in that permutation (i.e., the best “fake” result).
 * Repeat this process 100–1,000 times to build a null distribution of maximum importance scores — representing what we’d expect by chance alone.
 
-Key insight: In high-dimensional settings, the real question isn’t whether a protein is “important” in isolation — it’s whether it’s more important than the best spurious signal that arises when hunting through thousands of features. That’s why we focus on the maximum score per permutation.
+Observation: In high-dimensional settings, the real question isn’t whether a protein is “important” in isolation — it’s whether it’s more important than the best spurious signal that arises when hunting through thousands of features. That’s why we focus on the maximum score per permutation.
 
 ### Defining Significance
 
@@ -996,7 +1009,7 @@ We set our significance threshold at the 95th percentile of this null distributi
 
 This gives us a rigorous, conservative, and interpretable way to prioritize proteins for downstream validation, even in a severely underpowered cohort.
 
-```{r}
+```{r, warning = FALSE, message=FALSE}
 library(glmnet)
 library(doParallel)
 library(foreach)
@@ -1207,3 +1220,28 @@ ggplot(df_plot, aes(x = Score, fill = Type)) +
 stopCluster(cl)
 
 ```
+
+# Conclusions
+
+In summary, we reached the following conclusions.
+
+## Observational study
+
+* We identified two individuals, 0B8 and 0W8, with unusual expression patterns that form isolated clusters, as shown in the heatmap. It would be important to review the quality control metrics and metadata for these individuals to determine whether there is a technical or biological explanation.
+* The data did not cluster according to the predefined groups. Instead of three clearly separated groups (normal weight, overweight, and obese), we observed three mixed clusters: one consisting of two outlier samples, one cluster containing mostly normal weight individuals with some overweight and obese samples, and another cluster composed mainly of overweight and obese individuals with one normal weight sample.
+* No clear differences associated with age or sex were observed.
+
+## Differential expression study
+
+* We did not identify any statistically significant results after correcting for multiple testing, either in pairwise group comparisons (for example, normal weight versus obese or obese versus overweight) or when modeling body mass index as a continuous variable across all samples.
+* Enrichment analysis was not performed because no sets of differentially expressed proteins were identified.
+* We also evaluated a machine learning approach using an elastic net classifier to assess whether it could outperform standard differential expression analysis. Permutation tests were included to ensure that any classification performance exceeded what would be expected by chance. No statistically significant results were observed using this approach.
+
+## Take home message
+
+* We observe trends in protein expression that suggest potential group specific signatures; however, these differences do not remain statistically significant after correction for multiple testing. This is likely due to the small sample size, with only eight individuals included in the study. Increasing the sample size would likely improve statistical power.
+* Two mixed clusters were identified. It would be valuable to investigate protein expression differences between these clusters and to assess whether they reflect biological patterns not directly related to body mass index, such as differences in body fat composition. Having access to body fat percentage measurements would be particularly informative.
+
+
+
+
