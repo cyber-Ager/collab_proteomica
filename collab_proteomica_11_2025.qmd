@@ -58,6 +58,10 @@ if (!require("here", quietly = TRUE)) {
   install.packages("here")
 }
 
+if (!require("factoextra", quietly = TRUE)) {
+  BiocManager::install("factoextra")
+}
+
 if (!requireNamespace("limma", quietly = TRUE)) BiocManager::install("limma")
 ```
 
@@ -79,7 +83,7 @@ library(here)
 ```
 
 
-```{r}
+```{r, message=FALSE, echo=FALSE}
 # Set working directory to the own folder of the file
 setwd(here())
 
@@ -124,7 +128,7 @@ if (dir.exists(local_path)) {
     file_path2 <- file.path(local_path, "Secretoma Ob per Lipid Proteo i AC16.xlsx")  
 } else {
     message("Working in REMOTE environment.")
-    file_path2 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/Secretoma Ob per Lipid Proteo i AC16.xlsx")
+    file_path2 <- file.path(remote_base, "ager/collab/bioquimica/bmi_proteomics/inputs/Secretoma Ob per Lipid Proteo i AC16.xlsx")
 }
 
 meta_pat <- readxl::read_xlsx(file_path2)
@@ -138,7 +142,7 @@ if (dir.exists(local_path)) {
     file_path3 <- file.path(local_path, "proteinGroups.txt")  
 } else {
     message("Working in REMOTE environment.")
-    file_path3 <- file.path(base_path, "ager/collab/bioquimica/bmi_proteomics/inputs/proteinGroups.txt")
+    file_path3 <- file.path(remote_base, "ager/collab/bioquimica/bmi_proteomics/inputs/proteinGroups.txt")
 }
 
 raw_pr <- read.table(file_path3, sep = "\t", header = TRUE)
@@ -153,10 +157,15 @@ meta_pat <- meta_pat %>%
                 # Correct the meta_pat ID to make the same as expr_ALL
                 id = as.factor(paste0(group, tidyr::extract_numeric(id))),
                 )
+```
 
+### Before correction
+```{r}
 summary(meta_pat)
 ```
 
+
+### After correction
 ```{r}
 meta_pat$IMC[meta_pat$id == "NW3"] <- 21.6
 
@@ -165,12 +174,13 @@ summary(meta_pat)
 
 
 ```{r}
+knitr::kable(
 meta_pat %>% 
   group_by(group) %>% 
   select(-Num) %>%
   summarise(across(where(is.numeric),
                    list(mean = mean, sd = sd, min = min, max = max),
-                   .names = "{.col}_{.fn}"))
+                   .names = "{.col}_{.fn}")))
 
 ```
 
@@ -178,7 +188,9 @@ meta_pat %>%
 ## Data exploration
 ### Statistical comparison between groups: 
 
-```{r}
+**Objective:** Check the group imbalance respect the variables Sex and DM.
+
+```{r, warning=FALSE, message=FALSE}
 chi_square_group <- function(var) {
   
   tab <- table(meta_pat$group, meta_pat[[var]])
@@ -205,9 +217,17 @@ res_sexo  <- chi_square_group("Sexo")
 res_otros <- chi_square_group("Otros")
 
 res_sexo
+```
+The distribution of sex across groups does not seems imbalanced.
+
+```{r, warning=FALSE, message=FALSE}
 res_otros
 ```
 The distribution of DM across groups is highly unbalanced (Fisher’s exact test p = 5.7×10⁻⁴), indicating a strong and statistically significant association between having diabetes and overweight.
+
+::: {.callout-warning}
+**Confounding Bias:** Having an unbalanced group means that is not possible to know if the study results are really associated to the phenotype of interest (Obessity & Over Weight) or to the counfounding variable (DM), as there is no way to separate the effect of these two variables. 
+:::
 
 ### Heat Map
 
@@ -244,7 +264,260 @@ pheatmap(expr_top100,
          main = "Expression heatmap (Top 100 most variable proteins)")
 ```
 
+It can be seen how there is no a clear clusterization of patients. However if we check the k=3 clusters, we can see how it seems that all the control grouo falls in almost in the same group. We can check further if there is some key aspects about this differentiation.
+
+::: {.callout-tip}
+## Interesting Subjects
+It can be seen how the *OW8* and the *OB8* patients seem to have different protein distribution compared to the rest of the opatients. Could be interesting to see if there are some other variables affecting to this differentiation.
+:::
+
+```{r}
+res <- pheatmap(expr_top100, silent = TRUE) 
+col_clusters <- cutree(res$tree_col, k = 3)
+
+# Add col_cluster to dataset
+meta_pat$k3 <- as.factor(col_clusters)
+
+# 0) Prepare a DM variable robustly
+if ("DM" %in% names(meta_pat)) {
+  meta_pat <- meta_pat %>% mutate(DM_var = as.factor(DM))
+} else {
+  # try to detect 'DM' mention inside Otros (case-insensitive)
+  if ("Otros" %in% names(meta_pat)) {
+    meta_pat <- meta_pat %>%
+      mutate(DM_var = ifelse(grepl("\\bDM\\b|diabete|diabetes", Otros, ignore.case = TRUE),
+                             "yes", "no"),
+             DM_var = factor(DM_var, levels = c("no", "yes")))
+  } else {
+    # fallback: create an NA column so code still runs
+    meta_pat <- meta_pat %>% mutate(DM_var = factor(NA))
+    warning("No DM or Otros column found: DM_var set to NA for all rows.")
+  }
+}
+
+# Quick contingency tables (printed)
+cat("Counts: group by k3\n")
+print(table(meta_pat$k3, meta_pat$group))
+cat("\nCounts: Sexo by k3\n")
+print(table(meta_pat$k3, meta_pat$Sexo))
+cat("\nCounts: DM_var by k3\n")
+print(table(meta_pat$k3, meta_pat$DM_var))
+
+# 1) Bar plot: group per k3 (counts)
+p1 <- p1 <- ggplot(meta_pat, aes(x = k3, fill = group)) +
+  geom_bar(position = position_dodge(width = 0.8)) +
+  scale_fill_manual(values = c(
+    "NW" = "steelblue",
+    "OW" = "orange",
+    "OB" = "firebrick"
+  )) +
+  labs(title = "Counts of NW / OW / OB per cluster (k3)",
+       x = "Cluster (k3)",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+# 2) Bar plot: Sexo per k3
+p2 <- ggplot(meta_pat, aes(x = k3, fill = Sexo)) +
+  geom_bar(position = position_dodge(width = 0.8)) +
+  scale_fill_manual(values = c(
+    "F" = "#C77CFF",  # lilac
+    "M" = "#2E8B57"   # green (sea green)
+  )) +
+  labs(title = "Counts of Sex per cluster (k3)",
+       x = "Cluster (k3)",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+# 3) Bar plot: DM (detected) per k3
+# If DM_var is all NA, show an informative plot (empty)
+if (all(is.na(meta_pat$DM_var))) {
+  p3 <- ggplot() +
+    annotate("text", x = 1, y = 1, label = "No DM information available", size = 5) +
+    labs(title = "DM counts per k3") +
+    theme_void()
+} else {
+  p3 <- ggplot(meta_pat, aes(x = k3, fill = DM_var)) +
+  geom_bar(position = position_dodge(width = 0.8)) +
+  scale_fill_manual(values = c(
+    "no"  = "#87CEEB",  # soft green
+    "yes" = "#808080"  # muted purple
+  )) +
+  labs(title = "Counts of DM per cluster (k3)",
+       x = "Cluster (k3)",
+       y = "Count",
+       fill = "DM") +
+    theme(legend.position = "right")
+}
+
+# 4) Boxplot: Edad by k3
+p4 <- ggplot(meta_pat, aes(x = k3, y = Edad)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2, size = 1, alpha = 0.7) +
+  labs(title = "Age (Edad) distribution by cluster (k3)",
+       x = "Cluster (k3)",
+       y = "Edad (years)") +
+  theme_minimal()
+
+# Combine into 2x2 layout
+combined_plot <- (p1 | p2) / (p3 | p4) +
+  plot_annotation(title = "Summary of clusters (k3) by group / sex / DM / age")
+
+# Print the combined plot
+print(combined_plot)
+
+# Optionally save
+# ggsave("k3_summary_2x2.png", combined_plot, width = 12, height = 9, dpi = 300)
+```
+### Main protein differences across clusters
+
+We compute the average expression difference between the three clustered groups and we ploted heat maps with the Top 20 proteins with higher average differences between groups. This way is possible to see which proteins were influenciating the separation of these clusters.
+
+```{r}
+# Required packages
+library(dplyr)
+library(pheatmap)
+
+# Make sure sample names line up (coerce id to character)
+meta_pat <- meta_pat %>% mutate(id = as.character(id))
+expr_top100 <- expr_top100[, meta_pat$id]   # reorder columns to match meta_pat
+
+# Ensure k3 is a factor with sensible ordering
+k3 <- factor(meta_pat$k3, levels = sort(unique(meta_pat$k3)))
+
+# 1) Compute mean expression per protein per k3
+cluster_means <- sapply(levels(k3), function(cl) {
+  rowMeans(expr_top100[, meta_pat$k3 == cl, drop = FALSE])
+})
+colnames(cluster_means) <- paste0("k3_", levels(k3))
+
+# 2) Compute the difference (max - min) across clusters for each protein
+range_diff <- apply(cluster_means, 1, function(x) max(x) - min(x))
+
+# 3) Select top 20 proteins by that range
+top20 <- names(sort(range_diff, decreasing = TRUE))[1:20]
+
+# 4) Build a summary table for the top20
+top20_table <- data.frame(
+  protein = top20,
+  range = range_diff[top20],
+  max_cluster = apply(cluster_means[top20, , drop = FALSE], 1, function(x) {
+    levels(k3)[which.max(x)]
+  }),
+  stringsAsFactors = FALSE
+)
+# append cluster means as columns
+top20_table <- cbind(top20_table, as.data.frame(cluster_means[top20, , drop = FALSE]))
+top20_table <- top20_table %>% arrange(desc(range))
+
+# Print the summary table
+knitr::kable(print(top20_table))
+```
+
+
+```{r}
+# 5) Order columns for heatmap: by k3, then by sample mean across top20
+sample_means_top20 <- colMeans(expr_top100[top20, , drop = FALSE])
+samp_df <- data.frame(id = colnames(expr_top100),
+                      k3 = meta_pat$k3,
+                      sample_mean = sample_means_top20,
+                      stringsAsFactors = FALSE)
+samp_df <- samp_df %>% arrange(k3, sample_mean)
+sample_order <- samp_df$id
+
+# 6) Prepare annotation for columns
+annotation_col <- data.frame(k3 = factor(meta_pat$k3, levels = levels(k3)),
+                             group = meta_pat$group)
+rownames(annotation_col) <- meta_pat$id
+
+# Optional: annotation colors (pick any palette you like)
+annotation_colors <- list(
+  k3 = setNames(c("#F8766D", "#00BA38", "#619CFF")[seq_along(levels(k3))], levels(k3)),
+  group = c("NW" = "steelblue", "OW" = "orange", "OB" = "firebrick")
+)
+
+# 7) Plot pheatmap: scale rows to emphasize differences across proteins
+pheatmap(expr_top100[top20, sample_order],
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = FALSE,        # columns are already ordered by k3 & sample mean
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         annotation_col = annotation_col,
+         annotation_colors = annotation_colors,
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         main = "Top 20 proteins (max-min across clusters)")
+
+```
+
+In this plot we can see how the higher differences are influenced mainly by **group 3**,  as these two patients have significantly different protein patterns compared to the other groups. Because of this reason we consider to check the differences between group1 vs group 2 and repeat the process.
+
+#### Protein differences Group 1 vs Group 2
+
+```{r}
+# 2) Compute the difference (max - min) across clusters for each protein
+range_diff <- abs(cluster_means[, "k3_2"] - cluster_means[, "k3_1"])
+
+# 3) Select top 20 proteins by that range
+top20 <- names(sort(range_diff, decreasing = TRUE))[1:20]
+
+# 4) Build a summary table for the top20
+top20_table <- data.frame(
+  protein = top20,
+  range = range_diff[top20],
+  max_cluster = apply(cluster_means[top20, , drop = FALSE], 1, function(x) {
+    levels(k3)[which.max(x)]
+  }),
+  stringsAsFactors = FALSE
+)
+# append cluster means as columns
+top20_table <- cbind(top20_table, as.data.frame(cluster_means[top20, , drop = FALSE]))
+top20_table <- top20_table %>% arrange(desc(range))
+
+# Print the summary table
+knitr::kable(print(top20_table))
+```
+
+
+```{r}
+# 5) Order columns for heatmap: by k3, then by sample mean across top20
+sample_means_top20 <- colMeans(expr_top100[top20, , drop = FALSE])
+samp_df <- data.frame(id = colnames(expr_top100),
+                      k3 = meta_pat$k3,
+                      sample_mean = sample_means_top20,
+                      stringsAsFactors = FALSE)
+samp_df <- samp_df %>% arrange(k3, sample_mean)
+sample_order <- samp_df$id
+
+# 6) Prepare annotation for columns
+annotation_col <- data.frame(k3 = factor(meta_pat$k3, levels = levels(k3)),
+                             group = meta_pat$group)
+rownames(annotation_col) <- meta_pat$id
+
+# Optional: annotation colors (pick any palette you like)
+annotation_colors <- list(
+  k3 = setNames(c("#F8766D", "#00BA38", "#619CFF")[seq_along(levels(k3))], levels(k3)),
+  group = c("NW" = "steelblue", "OW" = "orange", "OB" = "firebrick")
+)
+
+# 7) Plot pheatmap: scale rows to emphasize differences across proteins
+pheatmap(expr_top100[top20, sample_order],
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = FALSE,        # columns are already ordered by k3 & sample mean
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         annotation_col = annotation_col,
+         annotation_colors = annotation_colors,
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         main = "Top 20 proteins (max-min across group 1 vs group 2)")
+```
+
+
 ### Protein values per patient
+
+We plot the protein distribution across patients in order to see if the expression pattern is similar or not.
 
 ```{r}
 # Add probe IDs as a column
@@ -295,8 +568,11 @@ ggsave(
 )
 ```
 
-![](expression_density_combined.png)
+![](results/expression_density_combined.png)
+
 ### Mean vs SD per Protein
+
+We also check the distribution of protein expression and the standard deviation of them acorss patients.
 
 ```{r}
 # Compute mean and SD across patients for each protein
